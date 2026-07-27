@@ -1,1 +1,2 @@
-# llms_engineering
+# LLMs Engineering
+- Quick experimentation of LLMs Engineering
