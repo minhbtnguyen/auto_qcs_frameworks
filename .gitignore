@@ -12,6 +12,9 @@ __pycache__/
 .pytest_cache/
 .ipynb_checkpoints/
 
+# generated output
+logs.txt
+
 # OS / editor
 .DS_Store
 .vscode/
