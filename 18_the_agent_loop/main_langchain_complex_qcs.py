@@ -215,7 +215,9 @@ def _do_extract(invoice_id: str) -> ExtractedRecord:
 
 
 @tool
-def extract_document(invoice_id: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> Command:
+def extract_document(
+    invoice_id: str, tool_call_id: Annotated[str, InjectedToolCallId]
+) -> Command:
     """Extract structured invoice data (vendor, total, date, line items) from
     the raw source document for the given invoice ID."""
     record = _do_extract(invoice_id)
@@ -486,7 +488,9 @@ def run_agent(user_message: str, trace: bool = False) -> dict:
                 for key, value in p.items():
                     if key == "messages":
                         for msg in value:
-                            print(f"  messages += {msg.type}: {str(msg.content)[:120]!r}")
+                            print(
+                                f"  messages += {msg.type}: {str(msg.content)[:120]!r}"
+                            )
                     else:
                         print(f"  {key} = {value}")
             print()

@@ -1,0 +1,108 @@
+======================================================================
+MULTI-AGENT QCS v3 — Hierarchical (top supervisor + 2 teams)
+======================================================================
+
+top-level graph structure (Mermaid):
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	data_team(data_team)
+	reset_for_audit(reset_for_audit)
+	audit_team(audit_team)
+	verdict(verdict)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> data_team;
+	audit_team --> verdict;
+	data_team --> reset_for_audit;
+	reset_for_audit --> audit_team;
+	verdict --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
+
+
+data_team subgraph structure (Mermaid):
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	supervisor(supervisor)
+	extractor(extractor)
+	database(database)
+	tools(tools)
+	budget_exhausted(budget_exhausted)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> supervisor;
+	database -.-> supervisor;
+	database -.-> tools;
+	extractor -.-> supervisor;
+	extractor -.-> tools;
+	supervisor -. &nbsp;end&nbsp; .-> __end__;
+	supervisor -.-> budget_exhausted;
+	supervisor -.-> database;
+	supervisor -.-> extractor;
+	tools --> supervisor;
+	budget_exhausted --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
+
+
+audit_team subgraph structure (Mermaid):
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	comparator(comparator)
+	risk_assessor(risk_assessor)
+	tools(tools)
+	budget_exhausted(budget_exhausted)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> comparator;
+	comparator -.-> budget_exhausted;
+	comparator -.-> tools;
+	risk_assessor -.-> budget_exhausted;
+	risk_assessor -.-> tools;
+	tools -. &nbsp;end&nbsp; .-> __end__;
+	tools -.-> risk_assessor;
+	budget_exhausted --> __end__;
+	comparator -.-> comparator;
+	risk_assessor -.-> risk_assessor;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
+
+    [data-team supervisor] -> extractor (Need to pull the actual invoice data from the source document for INV-58291 before any reconciliation can occur.)
+    [data-team supervisor] -> database (Invoice data extracted successfully; now need to retrieve the expected database record for INV-58291 to compare)
+    [data-team supervisor] -> end (Both extractor and database have reported their findings, now proceeding to reconciliation analysis.)
+    [audit-team] -> comparator
+    [audit-team] -> risk_assessor
+[verdict] -> fail (Invoice INV-58291 from Acme Robotics Corp has a discrepancy in the total amount: extracted total is $2598.54 but the database expected total is $2523.54, a variance of $75.00 (2.97%). The risk assessment rated this as medium risk. Per QC guidelines, medium risk level results in a failed verdict. The vendor name and invoice date matched correctly.)
+
+[00    user] Please reconcile invoice INV-58291. Steps: first extract the invoice data, then get the expected record from the database, then reconcile them, assess the risk, and report any discrepancies.
+[01 thought] I'll help you reconcile invoice INV-58291. Let me start by extracting the invoice data.
+[01  action] extract_document({'invoice_id': 'INV-58291'}) -> Extracted INV-58291: vendor='Acme Robotics Corp', total=$2598.54, date=2026-03-03, 4 line item(s).
+[03 thought] Now let me get the expected record from the database:
+[03  action] get_db_record({'invoice_id': 'INV-58291'}) -> Database record for INV-58291: vendor='Acme Robotics Corp', total=$2523.54, date=2026-03-03
+[05 thought] Now let me compare the extracted invoice data against the database record to identify any discrepancies:
+[05  action] compare_records({'invoice_id': 'INV-58291'}) -> Comparison complete: invoice INV-58291 was checked on vendor, total, and date. This is the complete and only list of discrepancies found (1 total) -- total: expected $2523.54, found $2598.54. No other fields were checked or flagged.
+[07 thought] Now let me assess the risk level of this discrepancy:
+[07  action] assess_risk({'invoice_id': 'INV-58291'}) -> Risk assessment for INV-58291: medium risk -- Total variance is 2.97% of the expected amount.
+[09   final] QC Verdict: FAIL
+
+Reasoning: Invoice INV-58291 from Acme Robotics Corp has a discrepancy in the total amount: extracted total is $2598.54 but the database expected total is $2523.54, a variance of $75.00 (2.97%). The risk assessment rated this as medium risk. Per QC guidelines, medium risk level results in a failed verdict. The vendor name and invoice date matched correctly.
+
+extracted:      invoice_id='INV-58291' vendor='Acme Robotics Corp' total=2598.54 date='2026-03-03' line_items=['Widget Assembly Kit x10 - $1,200.00', 'Gizmo Sensor Module x4 - $980.00', 'Shipping & Handling - $145.50', 'Rush Processing Fee - $75.00']
+reconciliation: invoice_id='INV-58291' matched=False discrepancies=[Discrepancy(field='total', expected='$2523.54', found='$2598.54')]
+risk:           invoice_id='INV-58291' level='medium' detail='Total variance is 2.97% of the expected amount.'
+qc_report:      status='fail' reasoning='Invoice INV-58291 from Acme Robotics Corp has a discrepancy in the total amount: extracted total is $2598.54 but the database expected total is $2523.54, a variance of $75.00 (2.97%). The risk assessment rated this as medium risk. Per QC guidelines, medium risk level results in a failed verdict. The vendor name and invoice date matched correctly.'
