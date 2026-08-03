@@ -133,7 +133,9 @@ class QCReport(BaseModel):
 # ------------------------------
 class PlanStep(BaseModel):
     plan: str = Field(description="One sentence: what this step does and why")
-    evidence_var: str = Field(description='Evidence variable for this step\'s result, e.g. "#E1"')
+    evidence_var: str = Field(
+        description='Evidence variable for this step\'s result, e.g. "#E1"'
+    )
     tool: Literal["extract_document", "get_db_record", "compare_records"]
     tool_input: str = Field(
         description=(
@@ -302,7 +304,9 @@ planner_llm = ChatAnthropic(model=MODEL, max_tokens=1024).with_structured_output
 
 
 def planner_node(state: State) -> dict:
-    plan = planner_llm.invoke([SystemMessage(PLANNER_PROMPT), HumanMessage(state["task"])])
+    plan = planner_llm.invoke(
+        [SystemMessage(PLANNER_PROMPT), HumanMessage(state["task"])]
+    )
     print("[planner] plan:")
     for step in plan.steps:
         print(f"  {step.evidence_var} = {step.tool}[{step.tool_input}]  # {step.plan}")
@@ -337,7 +341,9 @@ def worker_node(state: State) -> dict:
         else:
             observation = f"error: unknown tool {step.tool!r}"
 
-        print(f"[worker] {step.evidence_var} = {step.tool}[{invoice_id}] -> {observation}")
+        print(
+            f"[worker] {step.evidence_var} = {step.tool}[{invoice_id}] -> {observation}"
+        )
         evidence[step.evidence_var] = observation
 
     return {
@@ -369,7 +375,9 @@ def _render_plan_and_evidence(state: State) -> str:
     lines = [f"Task: {state['task']}", "", "Plan and evidence:"]
     for step in state["plan"].steps:
         observation = state["evidence"].get(step.evidence_var, "<no evidence>")
-        lines.append(f"{step.evidence_var} ({step.tool}[{step.tool_input}]): {step.plan}")
+        lines.append(
+            f"{step.evidence_var} ({step.tool}[{step.tool_input}]): {step.plan}"
+        )
         lines.append(f"  -> {observation}")
     return "\n".join(lines)
 

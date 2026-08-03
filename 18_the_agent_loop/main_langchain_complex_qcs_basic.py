@@ -210,6 +210,7 @@ def extract_document(invoice_id: str) -> str:
         f"{len(record.line_items)} line item(s)."
     )
 
+
 # This also return the string
 @tool
 def get_db_record(invoice_id: str) -> str:
@@ -248,6 +249,7 @@ def compare_records(invoice_id: str) -> str:
         f"found ({len(result.discrepancies)} total) -- {detail}. No other "
         "fields were checked or flagged."
     )
+
 
 # This is the collections of the tools but all take on the same data
 RECONCILIATION_TOOLS = [extract_document, get_db_record, compare_records]
