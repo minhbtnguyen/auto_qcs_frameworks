@@ -27,6 +27,13 @@ and the worker substitutes the real numbers in only once they exist.
 For the fuller, real-domain version of this same pattern (Pydantic records,
 deterministic reconciliation, exhaustive tool-return text to prevent
 fabrication), see main_langchain_complex_qcs_rewoo.py in this folder.
+
+Questions
+- What if complex task? Worker as executioner?
+- How to productionize planner?
+- The steps make sense but isolated? What if the output of step 2 depending on step 1? Calculator is equate from LLMs not from the tool's funcition
+- Is this a good production code template structure? 
+- 
 """
 
 import os
@@ -87,9 +94,7 @@ TOOLS = {
 # ------------------------------
 class PlanStep(BaseModel):
     plan: str = Field(description="One sentence: what this step does and why")
-    evidence_var: str = Field(
-        description='Evidence variable for this result, e.g. "#E1"'
-    )
+    evidence_var: str = Field(description='Evidence variable for this result, e.g. "#E1"')
     tool: Literal["lookup_capital", "lookup_population", "calculator"]
     tool_input: str = Field(
         description=(
@@ -130,9 +135,7 @@ planner_llm = ChatAnthropic(model=MODEL, max_tokens=1024).with_structured_output
 
 
 def planner_node(state: State) -> dict:
-    plan = planner_llm.invoke(
-        [SystemMessage(PLANNER_PROMPT), HumanMessage(state["task"])]
-    )
+    plan = planner_llm.invoke([SystemMessage(PLANNER_PROMPT), HumanMessage(state["task"])])
     print("[planner] plan:")
     for step in plan.steps:
         print(f"  {step.evidence_var} = {step.tool}[{step.tool_input}]  # {step.plan}")
@@ -153,9 +156,7 @@ def worker_node(state: State) -> dict:
     for step in state["plan"].steps:
         tool_input = _substitute(step.tool_input, evidence)
         observation = TOOLS[step.tool](tool_input)
-        print(
-            f"[worker] {step.evidence_var} = {step.tool}[{tool_input}] -> {observation}"
-        )
+        print(f"[worker] {step.evidence_var} = {step.tool}[{tool_input}] -> {observation}")
         evidence[step.evidence_var] = observation
     return {"evidence": evidence}
 
@@ -173,9 +174,7 @@ def _render_plan_and_evidence(state: State) -> str:
     lines = [f"Question: {state['task']}", "", "Plan and evidence:"]
     for step in state["plan"].steps:
         observation = state["evidence"][step.evidence_var]
-        lines.append(
-            f"{step.evidence_var} = {step.tool}[{step.tool_input}] -> {observation}"
-        )
+        lines.append(f"{step.evidence_var} = {step.tool}[{step.tool_input}] -> {observation}")
     return "\n".join(lines)
 
 
