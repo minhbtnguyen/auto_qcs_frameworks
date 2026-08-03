@@ -1,60 +1,63 @@
-# Config-Driven QCS
+# Automated QC Framework
 
-A quality-control check engine where the *sequence of steps* is never an
-LLM's runtime decision. Each check is a short, real Python function calling
-a shared tool registry; an LLM is involved only where a step or a verdict
-genuinely needs judgment — and, optionally, once at authoring time to draft
-a new check for a human to review.
+A Python framework for writing and running quality-control checks —
+document extraction, cross-source comparison, and validation — without an
+LLM ever deciding the sequence of steps at runtime. Each check is a short,
+real Python function built on a shared tool registry; an LLM is involved
+only where a step or a verdict genuinely needs judgment, and, optionally,
+once at authoring time to draft a new check for a human to review.
 
-This folder is the third stop in a progression explored across this repo:
-[`18_the_agent_loop`](../18_the_agent_loop) (ReAct — an LLM decides every
-step, live), [`19_rewoo`](../19_rewoo) (ReWOO — an LLM decides the whole
-plan once per run, then a deterministic worker executes it), and this
-folder (the plan is decided once, ever, at authoring time, and reused for
-every future run). See [Discussion](#discussion-react-vs-rewoo-vs-config-driven)
-for why that progression happened and when each pattern fits.
+This design is what's left after building and actually running three
+earlier architectures first: an agent that decides every step live
+(ReAct), an agent that plans the whole sequence once per run (ReWOO), and
+a YAML configuration engine interpreted by a generic runner. Each was
+rejected for a specific, observed reason — see
+[Why not ReAct, ReWOO, or YAML config?](#why-not-react-rewoo-or-yaml-config)
+and [Discussion](#discussion-react-vs-rewoo-vs-this-framework) below for
+the full reasoning, including the real bugs each one produced.
 
-**This folder itself went through a second, smaller evolution worth naming
-up front**: it originally expressed checks as YAML data, interpreted by a
-generic engine. That's gone. Checks are real Python now — see
-[How this folder changed](#how-this-folder-changed) for exactly what that
-traded away and what it bought back.
+## Setup
 
-## Why not ReAct, ReWOO, or the original Config-Driven (YAML)?
+```bash
+pip install -r requirements.txt
+cp .env.example .env   # then fill in ANTHROPIC_API_KEY
+```
+`CLAUDE_MODEL` in `.env` is optional (defaults to `claude-haiku-4-5`).
 
-Three earlier architectures were built and actually run in this repo before
-landing here — each rejected for a specific, observed reason, not on
-general principle. See [Discussion](#discussion-react-vs-rewoo-vs-config-driven)
+## Why not ReAct, ReWOO, or YAML config?
+
+Three earlier architectures were built and actually run before landing
+here — each rejected for a specific, observed reason, not on general
+principle. See [Discussion](#discussion-react-vs-rewoo-vs-this-framework)
 below for the full comparison; this is the short version.
 
-**ReAct** (`18_the_agent_loop`) — an LLM decides every step, live, one at a
-time. Rejected because the step sequence for a given QC check is always the
-same; a live per-step decision pays LLM cost, LLM latency, and needs a turn
-budget to guard against looping forever, for a choice that was never
-actually being made fresh each run. It also produced the worst failure
-modes actually observed anywhere in this repo: mis-routing, skipped
-mandatory steps, hallucinated dialogue that was never really sent.
+**ReAct** — an LLM decides every step, live, one at a time. Rejected
+because the step sequence for a given QC check is always the same; a live
+per-step decision pays LLM cost, LLM latency, and needs a turn budget to
+guard against looping forever, for a choice that was never actually being
+made fresh each run. It also produced the worst failure modes observed
+while building this: mis-routing, skipped mandatory steps, hallucinated
+dialogue that was never really sent.
 
-**ReWOO** (`19_rewoo`) — an LLM plans the whole sequence once per run
-(exactly 2 LLM calls, planner + solver), then a deterministic worker
-executes it, no turn budget needed. A real improvement over ReAct, but
-still rejected: across every verification run of the same check, the
-planner reproduced an *identical* plan structure every time. That's not
-planning, it's re-deriving a constant at LLM cost and LLM error risk — this
-repo hit two separate reference-resolution bugs from exactly that
-mechanism — for a decision that was never varying run to run.
+**ReWOO** — an LLM plans the whole sequence once per run (exactly 2 LLM
+calls, planner + solver), then a deterministic worker executes it, no turn
+budget needed. A real improvement over ReAct, but still rejected: across
+every verification run of the same check, the planner reproduced an
+*identical* plan structure every time. That's not planning, it's
+re-deriving a constant at LLM cost and LLM error risk — two separate
+reference-resolution bugs came from exactly that mechanism — for a
+decision that was never varying run to run.
 
-**Config-Driven, YAML edition** (this folder's own earlier state) — removed
-the redundant re-planning entirely: the sequence is decided once, at
-authoring time, and reused for free on every future run. This was the
-correct fix for ReWOO's actual problem, and it's still the shape of what's
-here now. But being *data* meant being bounded by whatever the schema
-anticipated — `compare_values` could only ever check equality, and a check
-asking for "must not exceed a threshold" got silently, wrongly mapped onto
-it, because the format had no way to say anything else. For a team of
-developers — not the non-programmer associates the YAML format existed to
-serve — that ceiling was a real, paid cost buying a benefit nobody was
-actually using.
+**YAML configuration** (this project's own earlier state) — removed the
+redundant re-planning entirely: the sequence is decided once, at authoring
+time, and reused for free on every future run. This was the correct fix
+for ReWOO's actual problem, and it's still the shape of what's here now.
+But being *data* meant being bounded by whatever the schema anticipated —
+the comparison tool could only ever check equality, and a check asking for
+"must not exceed a threshold" got silently, wrongly mapped onto it, because
+the format had no way to say anything else. For a team of developers — not
+non-programmer associates — that ceiling was a real, paid cost buying a
+benefit nobody was actually using.
 
 What's here now keeps YAML's actual win (zero orchestration LLM calls,
 decided once at authoring time, never re-derived) and removes YAML's
@@ -88,12 +91,14 @@ description (natural language)
                                                            reads mock_data.py)
 ```
 
+Everything below lives in `src/`.
+
 | File | Role |
 |---|---|
 | `engine.py` | `CheckContext` — the only shared infrastructure a check needs. `.call(tool, save_as=..., **kwargs)` runs a tool, logs it, saves its result under a name. `.compare(left, right)` runs the one shared comparison primitive and feeds the verdict rule. `.verdict()` is the deterministic pass-iff-everything-matched rule (0 LLM calls); `.llm_verdict(instructions)` is the opt-in judgment call for checks that need it (1 LLM call). No interpretation loop, no runnable entry point. |
 | `tools.py` | The tool registry (`ALL_TOOLS`). One function per data source (`read_pdf`, `get_pdf_section`, `query_database`, `read_spreadsheet`, `call_api`, `read_email`) plus `compare_values` and `llm_infer`. Every tool shares the signature `(**named_args, artifacts) -> (observation_text, structured_dict_or_None)`. |
 | `mock_data.py` | Fixture data standing in for a real PDF store, database, spreadsheet, API, and mailbox — kept separate from `tools.py` since this is the file that grows with every new test case. |
-| `check_builder.py` | `python check_builder.py "<description>"` — one LLM call extracts a `CheckDefinition` (Pydantic-structured, unchanged from the YAML era), `_validate()` catches structural problems, then `_to_python_script()` renders it as a real `run_<check_id>.py` file — unless one already exists, so it never clobbers a hand-edited check. |
+| `check_builder.py` | `python src/check_builder.py "<description>"` — one LLM call extracts a `CheckDefinition` (Pydantic-structured, unchanged from the YAML era), `_validate()` catches structural problems, then `_to_python_script()` renders it as a real `run_<check_id>.py` file — unless one already exists, so it never clobbers a hand-edited check. |
 | `run_<check_id>.py` | A complete, standalone check: `PARAMS: list[str]`, a `run_check(**params) -> dict` function built from `CheckContext`, and a standard argparse CLI wrapper. Nothing else needs to exist for a check to run — no separate data file. |
 
 ### Mechanics worth knowing
@@ -115,34 +120,34 @@ description (natural language)
 
 ## Usage
 
-Run an existing check:
+Run an existing check (from the repo root):
 ```bash
-python run_invoice_reconciliation.py --invoice_id=INV-58291
-python run_disclosure_check.py --doc_id=10-K-2025 --section="Risk Factors"
-python run_vendor_registry_match.py --vendor_id=V-100
+python src/run_invoice_reconciliation.py --invoice_id=INV-58291
+python src/run_disclosure_check.py --doc_id=10-K-2025 --section="Risk Factors"
+python src/run_vendor_registry_match.py --vendor_id=V-100
 ```
 
 Author a new one:
 ```bash
-python check_builder.py "Check that expense EXP-4471's claimed amount matches what was approved in email thread THREAD-882."
+python src/check_builder.py "Check that expense EXP-4471's claimed amount matches what was approved in email thread THREAD-882."
 ```
-This saves `run_<check_id>.py` directly — no separate data file. **Saved is
-not trusted** — read the printed proposal (and the generated file itself)
-before running it against anything that matters. `_validate()` only catches
-structural mistakes (unknown tool, undeclared param, dangling reference);
-it cannot catch a semantic mismatch, such as asking for "must not exceed a
-threshold" when the only comparison primitive available checks equality,
-not inequality. That specific bug happened for real while building this
-folder, in the YAML era — see Discussion below. **The difference now**: if
-you hit that bug today, you fix it by editing the one check's Python
-directly (`if float(pdf["total"]) > threshold: ...`), not by extending a
-schema everything else depends on.
+This saves `src/run_<check_id>.py` directly — no separate data file.
+**Saved is not trusted** — read the printed proposal (and the generated
+file itself) before running it against anything that matters. `_validate()`
+only catches structural mistakes (unknown tool, undeclared param, dangling
+reference); it cannot catch a semantic mismatch, such as asking for "must
+not exceed a threshold" when the only comparison primitive available checks
+equality, not inequality. That specific bug happened for real while
+building this, in the YAML era — see Discussion below. **The difference
+now**: if you hit that bug today, you fix it by editing the one check's
+Python directly (`if float(pdf["total"]) > threshold: ...`), not by
+extending a schema everything else depends on.
 
 Add a new tool: write one function in `tools.py` with a docstring stating
 its real parameter names and every field it returns, add fixture data to
 `mock_data.py`, add one line to `ALL_TOOLS`. Nothing else needs to change.
 
-## How this folder changed
+## How this project changed
 
 The original version had each check as a `checks/<check_id>.yaml`, executed
 by `engine.py` walking its steps generically — a `compare` step, a `$param`
@@ -169,8 +174,8 @@ that's the next fork, and it's a bigger one than this migration was.
 
 **A bug worth remembering, because it repeated:** the reference-resolution
 logic (turning `#E1.field`-style, then `name.field`-style, references into
-real values) has now broken the *identical* way twice in this repo's
-history — once in `engine.py`'s YAML-era `_resolve_value`, and again in
+real values) broke the *identical* way twice in this project's history —
+once in `engine.py`'s YAML-era `_resolve_value`, and again in
 `check_builder.py`'s `_render_value_expr` while building this very
 migration, because the fix wasn't carried over to the new function. Both
 times: a naive `"." in value` check misfired on free text that happened to
@@ -188,7 +193,7 @@ the one function it was first found in.
 - **The trigger layer is still a demo.** `run_<check_id>.py` takes CLI args; nothing here decides *when* a check should run (a schedule, an event, a batch of IDs). Left open deliberately rather than guessed at.
 - **Every check duplicates its own CLI boilerplate.** In the YAML era, `run_<check_id>.py` was a generated, uniform template — changing CLI behavior meant editing one file. Now each check's `argparse` block is literal, repeated text in every file: 300 checks means 300 near-identical copies, and a CLI-behavior change means editing all of them, or writing a codemod. This is a real scaling regression the migration introduced, not a hypothetical one. The fix: pull the CLI entry point back into `engine.py` as a shared runner that imports `PARAMS`/`run_check` from whichever check module it's pointed at, instead of every check regenerating that logic.
 - **`_validate()` runs exactly once, at generation time, and never again.** The moment a developer hand-edits a check — which will happen constantly, since escaping the comparison-operator ceiling is the whole point of being in Python — there is no structural guardrail left. A developer who forgets to call `ctx.compare()` for a field they meant to check gets no error; the check silently checks less than intended and keeps passing, because `ctx.verdict()` only ever sees whatever comparisons actually ran. YAML's declarative `steps:` list made "did I check everything I meant to" verifiable at a glance; free-form Python is harder to audit that way by construction — the direct cost of the expressiveness this migration bought.
-- **No tests exist yet against any `run_check()` function**, despite being trivially unit-testable. The capability is real; the discipline of using it hasn't been exercised in this repo.
+- **No tests exist yet against any `run_check()` function**, despite being trivially unit-testable. The capability is real; the discipline of using it hasn't been exercised here yet.
 
 ## Is `check_builder.py` actually worth it, given developers maintain this?
 
@@ -238,11 +243,10 @@ workflows is exactly one thing: how fast you want the first draft to
 appear. Not authoring, not review, not correctness, not reliability — draft
 speed, and nothing else.
 
-## Discussion: ReAct vs ReWOO vs Config-Driven
+## Discussion: ReAct vs ReWOO vs This Framework
 
-The throughline across all three patterns in this repo is **where the
-decision "what happens next" gets made, and how many times it gets
-re-made.**
+The throughline across all three patterns is **where the decision "what
+happens next" gets made, and how many times it gets re-made.**
 
 ```
 ReAct           [LLM] -> [tool] -> [LLM] -> [tool] -> [LLM] -> [tool] -> [LLM: done?]
@@ -251,30 +255,30 @@ ReAct           [LLM] -> [tool] -> [LLM] -> [tool] -> [LLM] -> [tool] -> [LLM: d
 ReWOO           [LLM: plan] -> [tool] -> [tool] -> [tool] -> [LLM: solve]
                  one decision per run, made before execution, fixed length
 
-Config-Driven   [tool] -> [tool] -> [tool] -> ([LLM: verdict], only if declared)
+This Framework  [tool] -> [tool] -> [tool] -> ([LLM: verdict], only if declared)
                  zero decisions per run -- decided once, at authoring time, ever
 ```
 
-| | ReAct (`18_the_agent_loop`) | ReWOO (`19_rewoo`) | Config-Driven (here) |
+| | ReAct | ReWOO | This Framework |
 |---|---|---|---|
 | Where "what to do" is decided | Every step, at runtime | Once per run, at runtime, before any tool executes | Once, at authoring time — reused across every future run |
 | LLM calls for orchestration | 1 per turn, unbounded | Exactly 2 (planner + solver), regardless of step count | 0, plus 1 optional (`.llm_verdict()`) only when judgment is genuinely needed |
 | Needs a turn/step budget | Yes — real risk of looping forever | No — plan has a fixed, known length the moment it's written | No — same reason, one level further |
 | Can adapt mid-task | Yes — next turn sees the last observation | No — committed before any tool runs | No — steps existed before this run's inputs did |
-| Failure mode actually observed in this repo | Mis-routing, skipped mandatory steps, hallucinated dialogue (the hierarchical QCS file's original top-level supervisor) | Reference-resolution bugs (`#E1.text` not substituting, a `.` in free text colliding with `#E1.field` syntax) — mechanism bugs, not routing or judgment mistakes | The same reference-resolution bug class recurring in `check_builder.py`'s Python renderer (see above); a semantic bug (equality used where an inequality was needed), caught only because a human read the draft before trusting it |
+| Failure mode actually observed while building this | Mis-routing, skipped mandatory steps, hallucinated dialogue (a hierarchical multi-agent supervisor) | Reference-resolution bugs (a symbolic reference not substituting; a `.` in free text colliding with reference syntax) — mechanism bugs, not routing or judgment mistakes | The same reference-resolution bug class recurring in the Python-code renderer (see above); a semantic bug (equality used where an inequality was needed), caught only because a human read the draft before trusting it |
 | Best fit | The step sequence genuinely can't be known in advance — it depends on what's discovered along the way | The sequence is knowable from the task text, but the task varies enough that hand-writing every variant isn't practical, and 2 LLM calls per run is acceptable | The sequence is fixed and known, run repeatedly — and the authors are comfortable reading and debugging Python |
 
 ### The pattern is a progression, not three unrelated choices
 
-Every transition in this repo happened for the same reason: a decision
-that *looked* like it needed live judgment turned out to be constant, and
-paying an LLM to re-derive a constant on every run was pure waste plus
-unnecessary risk. The hierarchical ReAct file's supervisor was choosing
-between two teams on every turn, for an order that was never actually in
-question. ReWOO's planner reliably reproduced the *identical* plan
-structure across every verification run of the same check — not planning,
-re-deriving a constant at LLM cost and LLM error risk. Config-driven is
-what's left once that constant is written down once instead of re-derived.
+Every transition happened for the same reason: a decision that *looked*
+like it needed live judgment turned out to be constant, and paying an LLM
+to re-derive a constant on every run was pure waste plus unnecessary risk.
+An early hierarchical ReAct supervisor was choosing between two teams on
+every turn, for an order that was never actually in question. ReWOO's
+planner reliably reproduced the *identical* plan structure across every
+verification run of the same check — not planning, re-deriving a constant
+at LLM cost and LLM error risk. This framework is what's left once that
+constant is written down once instead of re-derived.
 
 **A practical way to use all three together**: use ReAct (or a ReWOO
 planner) to *discover* what a new check's steps should be. Once the same
@@ -288,7 +292,7 @@ never buying anything once the plan stopped varying.
 ### Data vs. code turned out to be the wrong axis; LLM vs. human turned out to be a smaller question than it looked
 
 Two things were worth working out explicitly, because they weren't obvious
-going in and the answer reshaped this folder:
+going in and the answer reshaped this project:
 
 **"YAML vs. Python" is really "schema-validated structure vs. free-form
 code," and that axis is independent of who or what writes the check.** A
@@ -296,8 +300,8 @@ schema gives you a guarantee — no unknown tool, no dangling reference —
 that holds regardless of whether a human or an LLM produced the values.
 Free-form code has no such guarantee either way; reviewing LLM-written
 Python takes exactly the scrutiny reviewing hand-written Python would. This
-folder deliberately stayed on the schema-validated side of that axis (see
-[How this folder changed](#how-this-folder-changed)) while moving the
+project deliberately stayed on the schema-validated side of that axis (see
+[How this project changed](#how-this-project-changed)) while moving the
 *rendering* from YAML to Python — which is why `_validate()` still means
 something here, and why the equality-vs-threshold bug is a *known,
 documented* ceiling rather than a silent one.
@@ -307,13 +311,13 @@ being an architectural question and becomes a personal-workflow one** —
 did you dictate the function or type it. At that point a dedicated builder
 tool's value shrinks to convenience (a consistent prompt template,
 automatic file placement); the thing that made it more than "a prompt" —
-the schema — is gone by construction. That's *not* the state this folder
+the schema — is gone by construction. That's *not* the state this project
 ended up in, deliberately: `check_builder.py` kept the schema, which is
 exactly why it's still worth having as a distinct tool rather than just
 asking a general coding assistant to write the function.
 
 **The other open, load-bearing question is who actually authors these
-checks.** Config-driven's real advantage beyond removing the runtime LLM
+checks.** This framework's real advantage beyond removing the runtime LLM
 call is that a check stays *reviewable* by someone who reads Python
 carefully but wouldn't write it fluently from a blank file — the generated
 first draft plus `_validate()`'s structural guarantee lowers the bar for
