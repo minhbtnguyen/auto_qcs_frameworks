@@ -3,3 +3,4 @@ python-dotenv
 langgraph
 langchain-core
 langchain-anthropic
+pyyaml
