@@ -7,15 +7,14 @@ Every source tool returns a plain dict, not a bespoke Pydantic type per
 source, specifically so compare_values can reach into any two of them the
 same way regardless of where they came from. Each docstring enumerates the
 exact fields that tool returns -- whoever writes (or whoever's
-yaml_builder.py generates) a checks/<check_id>.yaml entry needs to know
-"vendor" is a real field name before writing pdf.vendor into a compare
-step, since nothing checks that reference against the tool's actual output
+check_builder.py generates) a run_<check_id>.py check needs to know
+"vendor" is a real field name before writing pdf["vendor"] into a compare
+call, since nothing checks that reference against the tool's actual output
 until the check runs.
 
-Each check under checks/ references only the tools it actually needs --
-proof that adding a tool here never requires touching engine.py, and that a
-given check only pays for (and only needs docs on) the tools its own steps
-call for.
+Each check imports only the tools it actually needs -- proof that adding a
+tool here never requires touching engine.py, and that a given check only
+pays for (and only needs docs on) the tools its own steps call for.
 
 Fixture/mock data lives in mock_data.py, not here -- see that file's
 docstring for why the split matters at 300+ checks. query_database,
@@ -114,11 +113,11 @@ def get_pdf_section(
 # in messages. One factory, three one-line instantiations below; a 4th or
 # 5th simple lookup source is one more factory call, not a copied function.
 # Each still gets its own real docstring -- that per-tool field-name
-# documentation is load-bearing (yaml_builder.py's catalog is generated
+# documentation is load-bearing (check_builder.py's catalog is generated
 # from exactly this text), so the factory takes it as a parameter rather
 # than trying to generate something generic.
 # ------------------------------
-def _make_lookup_tool(source: dict[str, dict], label: str, doc: str):
+def _make_lookup_tool(source: dict[str, dict], label: str, doc: str, name: str):
     def lookup(key: str, artifacts: dict[str, Any]) -> tuple[str, Optional[dict]]:
         key = key.strip()
         record = source.get(key)
@@ -133,6 +132,11 @@ def _make_lookup_tool(source: dict[str, dict], label: str, doc: str):
         return summary, record
 
     lookup.__doc__ = doc
+    # Without this, every factory-made tool's __name__ is literally
+    # "lookup" -- fine for dispatch (nothing dispatches by __name__), but
+    # engine.py's CheckContext.call() logs tool.__name__ for readability,
+    # and "lookup(...)" in a trace tells you nothing about which lookup ran.
+    lookup.__name__ = name
     return lookup
 
 
@@ -148,6 +152,7 @@ query_database = _make_lookup_tool(
     'like "INV-58291" returns {vendor, total, date}; a policy ID like '
     '"POLICY-TRAVEL" returns {category, required_title, threshold}; a '
     'vendor ID like "V-100" returns {vendor_id, legal_name, status}.',
+    name="query_database",
 )
 
 # Spreadsheet -- stands in for a parsed XLSX row lookup.
@@ -157,6 +162,7 @@ read_spreadsheet = _make_lookup_tool(
     "Look up a row from the expense ledger spreadsheet by expense ID. "
     'Input: key, e.g. "EXP-4471". Returns fields: expense_id, submitter, '
     "amount, category.",
+    name="read_spreadsheet",
 )
 
 # API -- deterministic (mocked) external service call.
@@ -166,6 +172,7 @@ call_api = _make_lookup_tool(
     "Call the external vendor-registry API for a vendor's current legal "
     'name and status. Input: key, e.g. "V-100". Returns fields: vendor_id, '
     "legal_name, status.",
+    name="call_api",
 )
 
 

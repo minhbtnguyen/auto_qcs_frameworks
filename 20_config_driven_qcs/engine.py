@@ -1,44 +1,46 @@
-"""The generic check-execution engine -- no planner, no LLM call to decide
-what steps to run, for checks whose steps are fixed at authoring time
-(which is most of them). Pure library, no runnable entry point of its own:
-each check lives in its own checks/<check_id>.yaml, run by its own thin
-run_<check_id>.py, both importing run_check from here. See yaml_builder.py
-for how a check gets authored and saved in the first place.
+"""Shared infrastructure checks are built on -- not an interpreter anymore.
+This folder used to have each check as a checks/<check_id>.yaml, executed
+by walking its steps generically here. That YAML layer is gone: a fixed
+data schema can only ever express what its schema anticipated (this one
+could compare two values for equality, and nothing else -- see
+check_builder.py's docstring for the concrete bug that caused), while a
+real check is just as easy to author -- by a human or by check_builder.py,
+reviewed the same way either way -- as a short Python function calling
+tools.py directly, with actual `if`/`for` available the moment a check
+needs it instead of a schema to extend.
 
-Reuses the exact same tool functions from tools.py that a planner-based
-setup would (a planner was tried first, in this folder, and dropped: for a
-fixed check, a planner re-derives the identical plan on every run at LLM
-cost and LLM error risk, for a decision that isn't actually being made more
-than once). Steps here are the same kind of "call this tool with these
-args, using an earlier step's result" a planner would produce -- the only
-thing missing on purpose is the planner itself: a check's step list is data
-an associate wrote once (or a yaml_builder.py session wrote once, then a
-human reviewed), not a decision re-derived on every run.
+What's still worth sharing across every check, and lives here:
+  - CheckContext.call: run a tool, log its observation, save its artifact
+    under a name -- the bookkeeping every check needs, so a check body
+    reads as the sequence of steps and nothing else.
+  - CheckContext.compare: the one comparison primitive every check reuses,
+    feeding the deterministic verdict rule below.
+  - CheckContext.verdict / .llm_verdict: pass iff every comparison matched
+    (zero LLM calls), or -- opt in, per check -- one LLM call reading the
+    gathered evidence, for the real but minority case where pass/fail
+    itself needs judgment (see run_disclosure_check.py, where llm_infer's
+    output is free text with nothing to structurally compare).
 
-Verdict is deterministic by default -- pass iff every `compare` step
-matched, computed in plain code, zero LLM calls. A check only pays for an
-LLM call at all if it declares a `verdict:` block, for the (real, but
-minority) case where pass/fail itself needs judgment rather than aggregate
-comparison -- see checks/disclosure_check.yaml, where llm_infer's output is
-free text with nothing to structurally compare.
+A check file is expected to define PARAMS: list[str] and
+run_check(**params) -> dict with that exact shape -- not enforced by a
+schema anymore, just a convention every generated and hand-written check
+follows, which is what keeps them batch-listable/introspectable despite
+being free code now instead of validated data.
 """
 
-import re
-from typing import Literal
+import os
+from typing import Literal, Optional
 
+from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
 
-from tools import ALL_TOOLS, MODEL
+from tools import compare_values
 
-# Deliberately anchored to the whole string, word chars only -- a natural-
-# language instructions sentence ("...must substantively describe these
-# risks.") also contains a literal ".", so a naive "if '.' in value" check
-# would misfire and try to treat the whole sentence as a name.field
-# reference. Anchoring means only an exact, bare "name.field" token can
-# ever match; a real sentence, with spaces and punctuation, never does.
-_REF_PATTERN = re.compile(r"^(\w+)\.(\w+)$")
+load_dotenv()
+
+MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5")
 
 
 class QCReport(BaseModel):
@@ -46,102 +48,48 @@ class QCReport(BaseModel):
     reasoning: str
 
 
-verdict_llm = ChatAnthropic(model=MODEL, max_tokens=512).with_structured_output(
-    QCReport
-)
+verdict_llm = ChatAnthropic(model=MODEL, max_tokens=512).with_structured_output(QCReport)
 
 
-def _resolve_value(
-    value: str, params: dict[str, str], artifacts: dict[str, dict]
-) -> str:
-    if value.startswith("$"):
-        return params[value[1:]]
-    match = _REF_PATTERN.match(value)
-    if match:
-        name, field = match.groups()
-        if name in artifacts and field in artifacts[name]:
-            return str(artifacts[name][field])
-    return value
+class CheckContext:
+    """One of these per run_check() call. Threads the bookkeeping (what
+    got saved where, what's been compared, what to tell the solver) so the
+    check body itself only has to name the sequence of steps."""
 
+    def __init__(self) -> None:
+        self.artifacts: dict[str, dict] = {}
+        self.evidence: list[str] = []
+        self.compares: list[dict] = []
 
-def run_check(check: dict, params: dict[str, str]) -> dict:
-    # Fail fast on a missing param, before any tool runs -- cheaper than
-    # discovering it three steps in, after real (possibly LLM-backed, i.e.
-    # billed) tool calls already ran. This is also the first thing in this
-    # file that actually reads a check's declared `params:` list -- until
-    # now it was documentation an associate could get wrong with no
-    # feedback, not something enforced.
-    missing = [p for p in check.get("params", []) if p not in params]
-    if missing:
-        reasoning = f"missing required params: {missing}"
-        print(f"[run] error: {reasoning}")
-        return {"status": "error", "reasoning": reasoning}
+    def call(self, tool, save_as: Optional[str] = None, **kwargs) -> dict:
+        observation, artifact = tool(**kwargs, artifacts=self.artifacts)
+        print(f"[run] {tool.__name__}({kwargs}) -> {observation}")
+        label = save_as or tool.__name__
+        self.evidence.append(f"{label}: {observation}")
+        # {} rather than None when a tool has no structured artifact (e.g.
+        # llm_infer) -- a later ["field"] lookup then just KeyErrors like
+        # any missing dict key would, instead of TypeError-ing on None.
+        artifact = artifact if artifact is not None else {}
+        if save_as:
+            self.artifacts[save_as] = artifact
+        return artifact
 
-    artifacts: dict[str, dict] = {}
-    evidence: list[str] = []
-    compares: list[dict] = []
-    orchestration_llm_calls = 0
-
-    for step in check["steps"]:
-        # Every failure mode here (typo'd tool name, wrong argument name, a
-        # step missing both 'tool' and 'compare', a $param reference that
-        # doesn't match anything) surfaces as a bare KeyError or TypeError
-        # deep in a dict lookup or **kwargs call -- exactly the kind of
-        # thing a non-programmer authoring a check will hit constantly.
-        # Catching it here means one misconfigured check returns a clear,
-        # actionable status instead of crashing whatever batch of checks
-        # was running it.
-        try:
-            if "compare" in step:
-                # `compare:` is sugar for calling the compare_values tool --
-                # goes through the same ALL_TOOLS entry point as every other
-                # step so there's exactly one implementation of comparison
-                # logic, not one in tools.py and a second duplicated here.
-                left_ref, right_ref = step["compare"]
-                left = _resolve_value(left_ref, params, artifacts)
-                right = _resolve_value(right_ref, params, artifacts)
-                observation, artifact = ALL_TOOLS["compare_values"](
-                    left=left, right=right, artifacts=artifacts
-                )
-                compares.append({"matched": artifact["matched"]})
-                print(f"[run] compare({left_ref}, {right_ref}) -> {observation}")
-                evidence.append(observation)
-                continue
-
-            tool_name = step["tool"]
-            tool_fn = ALL_TOOLS[tool_name]
-            args = {
-                key: _resolve_value(value, params, artifacts)
-                for key, value in step.get("args", {}).items()
-            }
-            observation, artifact = tool_fn(**args, artifacts=artifacts)
-        except (KeyError, TypeError) as e:
-            reasoning = f"error in step {step!r}: {type(e).__name__}: {e}"
-            print(f"[run] {reasoning}")
-            return {"status": "error", "reasoning": reasoning}
-
-        print(f"[run] {tool_name}({args}) -> {observation}")
-        save_as = step.get("save_as", tool_name)
-        evidence.append(f"{save_as}: {observation}")
-        # Store {} rather than None when a tool has no structured artifact
-        # (e.g. llm_infer) -- a later .field reference into it then just
-        # fails the "field in artifacts[name]" check and falls through to
-        # being treated as a literal, instead of raising.
-        artifacts[save_as] = artifact if artifact is not None else {}
-
-    if "verdict" in check:
-        orchestration_llm_calls += 1
-        context = "\n".join(evidence)
-        report = verdict_llm.invoke(
-            [SystemMessage(check["verdict"]["instructions"]), HumanMessage(context)]
+    def compare(self, left, right) -> dict:
+        observation, result = compare_values(
+            left=str(left), right=str(right), artifacts=self.artifacts
         )
-        result = {"status": report.status, "reasoning": report.reasoning}
-    else:
-        passed = all(c["matched"] for c in compares)
-        result = {
-            "status": "pass" if passed else "fail",
-            "reasoning": "; ".join(evidence),
-        }
+        print(f"[run] compare({left!r}, {right!r}) -> {observation}")
+        self.evidence.append(observation)
+        self.compares.append(result)
+        return result
 
-    print(f"[run] orchestration LLM calls: {orchestration_llm_calls}")
-    return result
+    def verdict(self) -> dict:
+        passed = all(c["matched"] for c in self.compares)
+        print("[run] orchestration LLM calls: 0")
+        return {"status": "pass" if passed else "fail", "reasoning": "; ".join(self.evidence)}
+
+    def llm_verdict(self, instructions: str) -> dict:
+        context = "\n".join(self.evidence)
+        report = verdict_llm.invoke([SystemMessage(instructions), HumanMessage(context)])
+        print("[run] orchestration LLM calls: 1")
+        return {"status": report.status, "reasoning": report.reasoning}

@@ -1,30 +1,37 @@
-"""Auto-generated runner for the invoice_reconciliation check. Loads
-checks/invoice_reconciliation.yaml and runs it against CLI-supplied params -- edit
-the yaml to change the check itself, not this file.
+"""invoice_reconciliation -- pure-compare shape: pass iff both comparisons
+match, computed in plain code, zero LLM calls for orchestration (read_pdf
+still makes one LLM call internally, but that's extraction needing
+judgment, not a routing decision).
 """
 
 import argparse
-from pathlib import Path
 
-import yaml
+from engine import CheckContext
+from tools import query_database, read_pdf
 
-from engine import run_check
+PARAMS = ["invoice_id"]
 
-CHECK_FILE = Path(__file__).parent / "checks" / "invoice_reconciliation.yaml"
+
+def run_check(**params) -> dict:
+    ctx = CheckContext()
+
+    pdf = ctx.call(read_pdf, save_as="pdf", doc_id=params["invoice_id"])
+    db = ctx.call(query_database, save_as="db", key=params["invoice_id"])
+
+    ctx.compare(pdf["vendor"], db["vendor"])
+    ctx.compare(pdf["total"], db["total"])
+
+    return ctx.verdict()
 
 
 def main() -> None:
-    with open(CHECK_FILE) as f:
-        check = yaml.safe_load(f)
-
     parser = argparse.ArgumentParser(description="Run the invoice_reconciliation check")
-    for p in check.get("params", []):
+    for p in PARAMS:
         parser.add_argument(f"--{p}", required=True)
     args = parser.parse_args()
 
-    result = run_check(check, vars(args))
     print()
-    print(f"result: {result}")
+    print(f"result: {run_check(**vars(args))}")
 
 
 if __name__ == "__main__":
