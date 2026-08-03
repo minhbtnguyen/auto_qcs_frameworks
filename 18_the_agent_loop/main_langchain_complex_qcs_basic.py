@@ -198,6 +198,7 @@ def _do_extract(invoice_id: str) -> ExtractedRecord:
     return record
 
 
+# Here we get the return structure of the data but will return the string
 @tool
 def extract_document(invoice_id: str) -> str:
     """Extract structured invoice data (vendor, total, date, line items) from
@@ -209,7 +210,7 @@ def extract_document(invoice_id: str) -> str:
         f"{len(record.line_items)} line item(s)."
     )
 
-
+# This also return the string
 @tool
 def get_db_record(invoice_id: str) -> str:
     """Look up the system-of-record database entry for an invoice ID."""
@@ -222,6 +223,7 @@ def get_db_record(invoice_id: str) -> str:
     )
 
 
+# This return the string
 @tool
 def compare_records(invoice_id: str) -> str:
     """Deterministically compare the extracted invoice data against the
@@ -247,12 +249,12 @@ def compare_records(invoice_id: str) -> str:
         "fields were checked or flagged."
     )
 
-
+# This is the collections of the tools but all take on the same data
 RECONCILIATION_TOOLS = [extract_document, get_db_record, compare_records]
 
 
 # ------------------------------
-# State
+# State: Keep track of the message
 # ------------------------------
 class State(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
